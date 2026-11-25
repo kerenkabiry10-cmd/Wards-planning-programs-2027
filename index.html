@@ -1,0 +1,206 @@
+<!doctype html>
+<html lang="he" dir="rtl">
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>תכניות עבודה 2027 | בני ציון</title>
+<style>
+  * { box-sizing: border-box }
+  body { margin: 0; background: #f3f6f8; color: #15334a; font: 16px/1.55 system-ui, sans-serif }
+  main { max-width: 1000px; margin: auto; padding: 28px 20px 60px }
+  header { padding: clamp(24px, 5vw, 54px); margin-bottom: 22px; border-radius: 22px; background: #12354b; color: white }
+  header p { margin: 0; color: #bce9df }
+  h1 { margin: 8px 0; line-height: 1.15; font-size: clamp(30px, 6vw, 54px) }
+  h2 { margin: 0 0 14px; font-size: 22px }
+  section, form { background: white; border: 1px solid #dae3e9; border-radius: 16px; padding: 20px; margin-bottom: 16px }
+  label { display: block; font-weight: 650; margin-bottom: 6px }
+  input, select, button { font: inherit; border: 1px solid #a8bdc8; border-radius: 9px; padding: 9px 13px; min-height: 44px; color: inherit; background: white; max-width: 100% }
+  button { cursor: pointer }
+  button:focus-visible, input:focus-visible, select:focus-visible { outline: 3px solid #209582; outline-offset: 2px }
+  button.primary, button[aria-pressed="true"] { background: #08685c; color: white; border-color: #08685c }
+  button:disabled { opacity: .55; cursor: default }
+  .grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(100%, 215px), 1fr)); gap: 12px }
+  .date { border: 1px solid #d8e5e7; border-radius: 12px; padding: 12px; background: #f8fbfb }
+  .date strong { display: block; margin-bottom: 8px }
+  .actions { display: flex; flex-wrap: wrap; gap: 8px; align-items: center }
+  .months { display: grid; gap: 20px }
+  h3 { margin: 0 0 8px }
+  #feedback { color: #91312b }
+  #feedback:empty { display: none }
+  #confirmation { background: #eaf7f1; border-color: #bbdfd1 }
+  .muted { color: #516678 }
+  [hidden] { display: none !important }
+</style>
+<main>
+  <header><p>המרכז הרפואי בני ציון</p><h1>תכניות עבודה 2027</h1><p id="subtitle">בחירת מועד להצגת תכנית העבודה של המחלקה</p></header>
+  <p id="feedback" role="alert"></p>
+  <section id="confirmation" hidden tabindex="-1" aria-live="polite"><h2>המועד נשמר</h2><p id="confirmed"></p><p>זימון מסודר יישלח בהמשך. לשינוי המועד יש לפנות לקרן.</p></section>
+  <div id="public" hidden>
+    <section><label for="department">המחלקה שלך</label><select id="department"></select></section>
+    <section><h2 id="slotTitle">מועדים פנויים</h2><div id="calendar" class="months"></div></section>
+    <section class="actions"><button id="reserve" class="primary" disabled>אישור ושמירת מועד</button><span id="selection" aria-live="polite"></span></section>
+  </div>
+  <form id="login" hidden><label for="key">סיסמת ניהול</label><div class="actions"><input id="key" type="password" required autocomplete="current-password"><button class="primary">כניסה</button></div></form>
+  <div id="dashboard" hidden>
+    <section><h2 id="missingTitle">טרם השתבצו</h2><ul id="missing"></ul></section>
+    <section><h2>מחלקות ששובצו</h2><div id="bookings"></div></section>
+    <form id="change"><h2>עדכון שיבוץ</h2><div class="actions"><select id="editDepartment" aria-label="מחלקה" required></select><select id="editSlot" aria-label="מועד חדש" required></select><button class="primary">שמירת שינוי</button><button type="button" id="cancel">ביטול שיבוץ</button></div></form>
+    <form id="add"><label for="newDepartment">הוספת מחלקה</label><div class="actions"><input id="newDepartment" maxlength="100" required><button class="primary">הוספה</button></div></form>
+  </div>
+</main>
+<script type="module">
+  const el = id => document.getElementById(id)
+  const isAdmin = location.pathname === '/admin'
+  let key = ''
+  let selected = ''
+  let revision = 0
+  let busy = false
+  let confirmed = false
+  let state
+  const dateFormat = new Intl.DateTimeFormat('he-IL', { weekday: 'long', day: 'numeric', month: 'long', timeZone: 'UTC' })
+  const monthFormat = new Intl.DateTimeFormat('he-IL', { month: 'long', timeZone: 'UTC' })
+  const dateOf = slot => new Date(slot.slice(0, 10) + 'T12:00:00Z')
+  const label = slot => dateFormat.format(dateOf(slot)) + ' בשעה ' + slot.slice(11)
+  function element(tag, value) {
+    const node = document.createElement(tag)
+    node.textContent = value
+    return node
+  }
+  async function api(path, data) {
+    const response = await fetch('/api/' + path, {
+      method: data ? 'POST' : 'GET',
+      headers: { ...(key && { Authorization: 'Bearer ' + key }), ...(data && { 'Content-Type': 'application/json' }) },
+      body: data ? JSON.stringify(data) : undefined,
+    })
+    const result = await response.json()
+    if (!response.ok) throw new Error(result.error)
+    return result
+  }
+  function options(id, placeholder, values) {
+    const input = el(id)
+    const current = input.value
+    input.replaceChildren(new Option(placeholder, ''), ...values.map(([value, title]) => new Option(title, value)))
+    if (values.some(([value]) => value === current)) input.value = current
+  }
+  function selection() {
+    for (const button of el('calendar').querySelectorAll('button')) button.setAttribute('aria-pressed', String(button.dataset.slot === selected))
+    el('reserve').disabled = busy || !selected || !el('department').value
+    el('selection').textContent = selected ? label(selected) : ''
+  }
+  function renderPublic() {
+    el('public').hidden = false
+    options('department', 'בחרו מחלקה', state.departments.map(name => [name, name]))
+    el('slotTitle').textContent = 'מועדים פנויים · ' + state.slots.length
+    if (!state.slots.includes(selected)) selected = ''
+    const months = new Map()
+    const calendar = el('calendar')
+    calendar.replaceChildren()
+    for (const slot of state.slots) {
+      const month = slot.slice(0, 7)
+      const day = slot.slice(0, 10)
+      if (!months.has(month)) {
+        const group = document.createElement('div')
+        const grid = document.createElement('div')
+        grid.className = 'grid'
+        group.append(element('h3', monthFormat.format(dateOf(slot))), grid)
+        calendar.append(group)
+        months.set(month, { grid, days: new Map() })
+      }
+      const { grid, days } = months.get(month)
+      if (!days.has(day)) {
+        const card = document.createElement('div')
+        card.className = 'date'
+        const actions = document.createElement('div')
+        actions.className = 'actions'
+        card.append(element('strong', dateFormat.format(dateOf(slot))), actions)
+        grid.append(card)
+        days.set(day, actions)
+      }
+      const button = element('button', slot.slice(11))
+      button.dataset.slot = slot
+      button.setAttribute('aria-label', label(slot))
+      button.onclick = () => { selected = slot; selection() }
+      days.get(day).append(button)
+    }
+    if (!state.slots.length) calendar.append(element('p', 'כל המועדים שובצו. אפשר לפנות לקרן לתיאום.'))
+    selection()
+  }
+  function renderAdmin() {
+    el('login').hidden = true
+    el('dashboard').hidden = false
+    el('missingTitle').textContent = 'טרם השתבצו · ' + state.departments.length
+    el('missing').replaceChildren(...state.departments.map(name => element('li', name)))
+    el('bookings').replaceChildren(...state.bookings.map(({department, slot}) => element('p', department + ' · ' + label(slot))))
+    if (!state.bookings.length) el('bookings').append(element('p', 'עדיין אין שיבוצים.'))
+    const departments = [...state.departments, ...state.bookings.map(row => row.department)]
+    options('editDepartment', 'בחירת מחלקה', departments.map(name => [name, name]))
+    options('editSlot', 'בחירת מועד פנוי', state.slots.map(slot => [slot, label(slot)]))
+  }
+  async function refresh() {
+    if (confirmed) return
+    const request = ++revision
+    const next = await api(isAdmin ? 'admin' : 'availability')
+    if (confirmed || request !== revision || JSON.stringify(next) === JSON.stringify(state)) return
+    state = next
+    if (isAdmin) renderAdmin()
+    else renderPublic()
+  }
+  const error = issue => { el('feedback').textContent = issue.message }
+  async function action(button, work) {
+    if (busy) return
+    busy = true
+    button.disabled = true
+    el('feedback').textContent = ''
+    try { await work() } catch (issue) { error(issue) }
+    finally { busy = false; button.disabled = false; selection() }
+  }
+  el('department').onchange = selection
+  el('reserve').onclick = event => action(event.currentTarget, async () => {
+    try {
+      const result = await api('book', { department: el('department').value, slot: selected })
+      confirmed = true
+      el('public').hidden = true
+      el('confirmation').hidden = false
+      el('confirmed').textContent = result.department + ' · ' + label(result.slot)
+      el('confirmation').focus()
+    } catch (issue) {
+      await refresh().catch(() => {})
+      throw issue
+    }
+  })
+  el('login').onsubmit = event => {
+    event.preventDefault()
+    action(event.submitter, async () => {
+      key = el('key').value
+      try { await refresh(); el('key').value = '' }
+      catch (issue) { key = ''; throw issue }
+    })
+  }
+  el('add').onsubmit = event => {
+    event.preventDefault()
+    action(event.submitter, async () => {
+      await api('admin/departments', { name: el('newDepartment').value })
+      el('newDepartment').value = ''
+      await refresh()
+    })
+  }
+  const edit = slot => api('admin/book', { department: el('editDepartment').value, slot }).then(refresh)
+  el('change').onsubmit = event => {
+    event.preventDefault()
+    action(event.submitter, () => edit(el('editSlot').value))
+  }
+  el('cancel').onclick = event => {
+    if (!state?.bookings.some(row => row.department === el('editDepartment').value)) {
+      return error(new Error('יש לבחור מחלקה שכבר שובצה.'))
+    }
+    if (confirm('לבטל את השיבוץ ולשחרר את המועד?')) action(event.currentTarget, () => edit(null))
+  }
+  if (isAdmin) {
+    el('subtitle').textContent = 'מעקב וניהול שיבוצים'
+    el('login').hidden = false
+  } else refresh().catch(error)
+  setInterval(() => { if (!busy && (!isAdmin || key)) refresh().catch(error) }, 2500)
+  document.addEventListener('visibilitychange', () => {
+    if (!document.hidden && !busy && (!isAdmin || key)) refresh().catch(error)
+  })
+</script>
+</html>
