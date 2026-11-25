@@ -27,7 +27,6 @@ const schedule = {
   '02-18': ['11:00', '13:30'],
   '02-22': ['11:00'],
   '02-23': ['11:00', '13:30'],
-  '04-04': ['13:30'],
 }
 export const slots = Object.entries(schedule).flatMap(([date, times]) =>
   times.map(time => `2027-${date}T${time}`),
